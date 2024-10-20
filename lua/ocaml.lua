@@ -16,6 +16,10 @@ local function with_ocamllsp(f)
   else return vim.api.nvim_err_writeln('ocamllsp is not running') end
 end
 
+local function remove_newlines(s)
+  return s:gsub('\n', ' ')
+end
+
 --- switch between .ml and .mli
 
 local function switchImplIntf()
@@ -91,8 +95,7 @@ local function documentSymbols()
       name = table.concat(parents, '.') .. '.' .. name
     end
     if item.kind == 'Value' then
-      local type = item.type:gsub('\n', ' ')
-      name = name .. ' : ' .. type
+      name = name .. ' : ' .. remove_newlines(type)
     end
     return string.format('%s%s%s', padding, prefix, name)
   end
@@ -248,7 +251,7 @@ if can_require 'fzf' then
       last_value = value
       local lines = {}
       for idx, item in ipairs(value) do
-        local line = string.format('%d,%s : %s%s', idx,item.name, item.type, newline)
+        local line = string.format('%d,%s : %s%s', idx,item.name, remove_newlines(item.type), newline)
         table.insert(lines, line)
       end
       return nil, lines
