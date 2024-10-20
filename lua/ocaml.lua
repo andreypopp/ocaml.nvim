@@ -1,19 +1,19 @@
-function can_require(module_name)
+local uv = vim.loop
+
+local function can_require(module_name)
   local ok,_ = pcall(require, module_name)
   return ok
 end
 
 local function get_ocamllsp()
-  local cs = vim.lsp.get_active_clients()
-  for _, c in ipairs(cs) do
-    if c.name == 'ocamllsp' then return c end
-  end
+  local cs = vim.lsp.get_clients {name='ocamllsp'}
+  for _, c in ipairs(cs) do if c.name == 'ocamllsp' then return c end end
 end
 
 local function with_ocamllsp(f)
   local c = get_ocamllsp()
-  if c then f(c)
-  else print('ERROR: ocamllsp is not running') end
+  if c then return f(c)
+  else return vim.api.nvim_err_writeln('ocamllsp is not running') end
 end
 
 --- switch between .ml and .mli
@@ -32,25 +32,43 @@ local function switchImplIntf()
   end)
 end
 
-function documentSymbols()
+local function merlinRequest(command, args, bufnr)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  return with_ocamllsp(function(lsp)
+    local params = {
+      uri = vim.uri_from_bufnr(0),
+      command = command,
+      args = args or {},
+      resultAsSexp = false
+    }
+    local res = lsp.request_sync('ocamllsp/merlinCallCompatible', params, 1000, bufnr)
+    if res.error then return vim.api.nvim_err_writeln('ERROR: ' .. vim.inspect(res.error)) end
+    return vim.json.decode(res.result.result).value
+  end)
+end
+
+local function co_merlinRequest(command, args, bufnr)
+  return with_ocamllsp(function(lsp)
+    local params = {
+      uri = vim.uri_from_bufnr(bufnr),
+      command = command,
+      args = args or {},
+      resultAsSexp = false
+    }
+    local me = coroutine.running()
+    local handler = function(err, res) 
+      local value
+      if res ~= nil then value = vim.json.decode(res.result).value end
+      coroutine.resume(me, err, value) end
+    lsp.request('ocamllsp/merlinCallCompatible', params, handler, bufnr)
+    return coroutine.yield()
+  end)
+end
+
+local function documentSymbols()
   local bufnr = vim.api.nvim_get_current_buf()
-
-  local params = {
-    uri = vim.uri_from_bufnr(0),
-    command = 'outline',
-    args = {},
-    resultAsSexp = false
-  }
-  local res = vim.lsp.buf_request_sync(bufnr, 'ocamllsp/merlinCallCompatible', params, 1000)
-
-  local found
-  for _, item in ipairs(res) do
-    if item.result then
-      found = vim.json.decode(item.result.result).value
-      break
-    end
-  end
-  if not found then return end
+  local value = merlinRequest('outline')
+  if not value then return end
   
   local function format_item(parents, item)
     local prefix = ''
@@ -92,7 +110,7 @@ function documentSymbols()
     table.insert(data, {text=text, col=item.start.col, line=item.start.line})
   end
 
-  for _, item in ipairs(found) do
+  for _, item in ipairs(value) do
     handle({}, item)
   end
 
@@ -101,6 +119,17 @@ function documentSymbols()
     table.insert(rev_data, data[i])
   end
   return rev_data
+end
+
+local function get_merlin_pos(winnr)
+  winnr = winnr or 0
+  local pos = vim.api.nvim_win_get_cursor(winnr)
+  return string.format('%d:%d', pos[1], pos[2])
+end
+
+local function searchByType(query, bufnr, winnr)
+  local pos = get_merlin_pos(winnr)
+  return co_merlinRequest('search-by-type', { query = query, position = pos }, bufnr)
 end
 
 ---
@@ -144,6 +173,7 @@ end
 if can_require 'fzf' then
   local fzf = require 'fzf'
   local action = require("fzf.actions").action
+  local raw_async_action = require("fzf.actions").raw_async_action
 
   local function item_to_line(item)
     return string.format('%s,%s,%s', item.line, item.col, item.text)
@@ -190,9 +220,75 @@ if can_require 'fzf' then
   end
 
   vim.api.nvim_create_user_command('OCamlDocumentSymbols', fzf_documentSymbols, {})
+
+
+  local function insert_at_position(text)
+    local pos = vim.api.nvim_win_get_cursor(0)
+    vim.api.nvim_buf_set_text(0, pos[1] - 1, pos[2] - 1, pos[1] - 1, pos[2] - 1, {text})
+  end
+
+  local function fzf_searchByType(opts)
+    local bufnr = vim.api.nvim_get_current_buf()
+    local winnr = vim.api.nvim_get_current_win()
+    local last_value = {}
+
+    local function search(query, with_newline)
+      if not query or query == '' then return nil, {} end
+      local newline = with_newline and '\n' or ''
+      local err, value = searchByType(query, bufnr, winnr)
+      if err then return err end
+      last_value = value
+      local lines = {}
+      for idx, item in ipairs(value) do
+        local line = string.format('%d,%s : %s%s', idx,item.name, item.type, newline)
+        table.insert(lines, line)
+      end
+      return nil, lines
+    end
+
+    local on_change = raw_async_action(function (oc, args)
+      coroutine.wrap(function()
+        local query = args[2]
+        local err, lines = search(query, true)
+        if err then
+          uv.close(oc)
+          return vim.api.nvim_err_writeln('ERROR: ' .. vim.inspect(err))
+        end
+        for _, line in ipairs(lines) do uv.write(oc, line) end uv.close(oc)
+      end)()
+    end)
+
+    local query = opts.fargs[1]
+    local args = {
+      "--prompt='SearchByType> '",
+      "--delimiter=,",
+      "--with-nth=2..",
+      "--layout=reverse-list",
+      "--disabled",
+      vim.fn.shellescape(string.format('--bind=change:reload:%s {q}', on_change))
+    }
+    if query then table.insert(args, string.format('--query=%s', vim.fn.shellescape(query))) end
+    local cmd = table.concat(args, ' ')
+
+    coroutine.wrap(function()
+      local err, lines = search(query, false)
+      if err then return vim.api.nvim_err_writeln('ERROR: ' .. vim.inspect(err)) end
+      local res = fzf.fzf(lines, cmd)
+      if #res < 1 then return end
+      local parts = vim.split(res[1], ',')
+      local idx = tonumber(parts[1])
+      local item = last_value[idx]
+      if not item then return end
+      insert_at_position('('..item.constructible..')')
+    end)()
+  end
+
+  vim.api.nvim_create_user_command('OCamlSearchByType', fzf_searchByType, {nargs='?'})
 end
+
 
 return {
   switchImplIntf = switchImplIntf,
   documentSymbols = documentSymbols,
+  searchByType = searchByType,
 }
