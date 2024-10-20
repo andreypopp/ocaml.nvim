@@ -217,7 +217,7 @@ if can_require 'fzf' then
         "--preview=" .. preview,
       }
       local cmd = table.concat(args, ' ')
-      local lines = fzf.fzf(lines, cmd, {title='DocumentSymbols'})
+      local lines = fzf.fzf(lines, cmd, {})
       vim.schedule(function()
         if not lines or #lines < 1 then return end
         local item = line_to_item(lines[1])
