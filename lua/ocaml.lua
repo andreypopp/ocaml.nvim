@@ -209,9 +209,17 @@ if can_require 'fzf' then
       return get_buffer_lines(bufnr, item.line, height)
     end)
     coroutine.wrap(function()
-      local lines = fzf.fzf(lines, string.format('--delimiter=, --with-nth=3.. --layout=reverse-list --preview=%s', preview))
+      local args = {
+        "--prompt='DocumentSymbols> '",
+        "--delimiter=,",
+        "--with-nth=3..",
+        "--layout=reverse-list",
+        "--preview=" .. preview,
+      }
+      local cmd = table.concat(args, ' ')
+      local lines = fzf.fzf(lines, cmd, {title='DocumentSymbols'})
       vim.schedule(function()
-        if #lines < 1 then return end
+        if not lines or #lines < 1 then return end
         local item = line_to_item(lines[1])
         vim.api.nvim_win_set_cursor(0, {item.line, item.col})
         vim.cmd('normal! zz')
@@ -274,12 +282,14 @@ if can_require 'fzf' then
       local err, lines = search(query, false)
       if err then return vim.api.nvim_err_writeln('ERROR: ' .. vim.inspect(err)) end
       local res = fzf.fzf(lines, cmd)
-      if #res < 1 then return end
-      local parts = vim.split(res[1], ',')
-      local idx = tonumber(parts[1])
-      local item = last_value[idx]
-      if not item then return end
-      insert_at_position('('..item.constructible..')')
+      vim.schedule(function()
+        if not res or #res < 1 then return end
+        local parts = vim.split(res[1], ',')
+        local idx = tonumber(parts[1])
+        local item = last_value[idx]
+        if not item then return end
+        insert_at_position('('..item.constructible..')')
+      end)
     end)()
   end
 
