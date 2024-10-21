@@ -95,7 +95,7 @@ local function documentSymbols()
       name = table.concat(parents, '.') .. '.' .. name
     end
     if item.kind == 'Value' then
-      name = name .. ' : ' .. remove_newlines(type)
+      name = name .. ' : ' .. remove_newlines(item.type or '...')
     end
     return string.format('%s%s%s', padding, prefix, name)
   end
