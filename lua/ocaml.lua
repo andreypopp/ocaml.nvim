@@ -132,7 +132,7 @@ end
 
 local function searchByType(query, bufnr, winnr)
   local pos = get_merlin_pos(winnr)
-  return co_merlinRequest('search-by-type', { query = query, position = pos }, bufnr)
+  return co_merlinRequest('search-by-type', { query = query, position = pos, ['with-doc'] = true }, bufnr)
 end
 
 ---
@@ -257,6 +257,12 @@ if can_require 'fzf' then
       return nil, lines
     end
 
+    local function get_item(line)
+      local parts = vim.split(line, ',')
+      local idx = tonumber(parts[1])
+      return last_value[idx]
+    end
+
     local on_change = raw_async_action(function (oc, args)
       coroutine.wrap(function()
         local query = args[2]
@@ -269,6 +275,14 @@ if can_require 'fzf' then
       end)()
     end)
 
+    local preview = action(function (res, height, width)
+      local item = get_item(res[1])
+      if item.doc == vim.NIL
+      then return ''
+      else return item.doc
+      end
+    end)
+
     local query = opts.fargs[1]
     local args = {
       "--prompt='SearchByType> '",
@@ -276,6 +290,7 @@ if can_require 'fzf' then
       "--with-nth=2..",
       "--layout=reverse-list",
       "--disabled",
+      "--preview=" .. preview,
       vim.fn.shellescape(string.format('--bind=change:reload:%s {q}', on_change))
     }
     if query then table.insert(args, string.format('--query=%s', vim.fn.shellescape(query))) end
@@ -287,9 +302,7 @@ if can_require 'fzf' then
       local res = fzf.fzf(lines, cmd)
       vim.schedule(function()
         if not res or #res < 1 then return end
-        local parts = vim.split(res[1], ',')
-        local idx = tonumber(parts[1])
-        local item = last_value[idx]
+        local item = get_item(res[1])
         if not item then return end
         insert_at_position('('..item.constructible..')')
       end)
